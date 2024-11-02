@@ -12,6 +12,8 @@ import sqlite3 as sq
 #import schedule
 import time
 import threading
+import string
+import random
 
 only_one = 0
 bot = telebot.TeleBot(TOKEN)
@@ -28,6 +30,7 @@ interval_minutes = 0
 reminder_set = ""
 choose_set_for = 0
 target_epoch_time = 0
+add_class_stage = 1
 
 
 def update():
@@ -51,6 +54,21 @@ def update():
                 (i, q, user_id, current_set[0]),
             )
 
+def update_classes():
+    global classes_with_me
+    global my_classes
+    global all_classes
+    with sq.connect("students.db") as con:
+        cur = con.cursor()
+        cur.execute(f"SELECT code FROM students WHERE student_id = {user_id}")
+        classes_with_me = cur.fetchall()
+    with sq.connect("classes.db") as con:
+        cur = con.cursor()
+        cur.execute(f"SELECT code FROM classes WHERE teacher = {user_id}")
+        my_classes = cur.fetchall()
+        cur.execute(f"SELECT code FROM classes")
+        all_classes = cur.fetchall()
+
 
 def update_sets():
     global col_of_set
@@ -69,6 +87,16 @@ def update_sets():
         print(sets, "sets")
         col_of_set = len(unique_set)
         print(unique_set)
+        
+@bot.message_handler(commands=['join'])
+def handle_join_command(message):
+    # Извлечение параметра из команды
+    command, param = message.text.split(sep="_")
+    user_id = message.from_user.id
+    with sq.connect("students.db") as con:
+        cur = con.cursor()
+        cur.execute(f"INSERT OR UPDATE INTO students (student_id, code) VALUES ({user_id}, {param})")
+    bot.reply_to(message, f"Вы присоединились к классу.")
 
 
 def add(question, answer):
@@ -89,6 +117,11 @@ def add(question, answer):
             (user_id, col_of_q + 1, current_set[0], question, answer),
         )
 
+def generate_short_unique_key(length=5):
+    # Определяем набор символов: буквы и цифры
+    characters = string.ascii_letters + string.digits
+    # Генерируем случайный ключ заданной длины
+    return ''.join(random.choice(characters) for _ in range(length))
 
 def add_set(name):
     global sets
@@ -101,6 +134,19 @@ def add_set(name):
         )
     sets.append(name)
     current_set = name
+    
+def add_class(message, name):
+    update_classes()
+    new_key = generate_short_unique_key()
+    while new_key in all_classes:
+        new_key = generate_short_unique_key()
+    with sq.connect("classes.db") as con:
+        cur = con.cursor()
+        cur.execute(f"INSERT INTO classes (teacher, class_name, code) VALUES (?, ?, ?)", (user_id, name, new_key))
+    bot.send_message(message.chat.id, "Для того чтобы дети присоеденились к вашему классу отправте им ссылку:")
+    bot.send_message(message.chat.id, f"https://t.me/Cards_for_memory_bot?start=join_{new_key}")
+    
+    
 
 
 def quest(number):
@@ -187,7 +233,7 @@ def set_intervals_on(current_set, user_id, message):
                 (user_id, current_set[0]),
             )
             cur.execute(
-                f"""INSERT OR REPLACE INTO intervals (user_id, set_name, value) VALUES (? , ? , ?)""",
+                f"""INSERT OR IGNORE INTO intervals (user_id, set_name, value) VALUES (? , ? , ?)""",
                 (user_id, current_set[0], 1),
             )
         bot.send_message(
@@ -333,7 +379,13 @@ def start(message):
             reply_markup=add_kb,
         )
 
-
+@bot.message_handler(commands=["add_class"])
+def add_class_command(message):
+    global stage
+    global add_class_stage
+    stage = "add_class"
+    bot.reply_to(message, "Введите цифру и номер класса:")
+    
 @bot.message_handler(commands=["reminder_on"])
 def start(message):
     set_intervals_on(current_set, user_id, message)
@@ -374,6 +426,11 @@ def chek_text(message):
         add_set(message.text)
         bot.send_message(message.chat.id, "Хранилеще успешно созданно!")
         menu(message)
+        
+    elif stage == "add_class":
+        if add_class_stage == 1:
+            add_class(message, message.chat.id)
+        
 
     elif stage == "del_set":
         if int(message.text) <= col_of_set:
